@@ -1,52 +1,84 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// input.js — keyboard and mouse state for the game: held keys for movement, one-shot action
+// flags for the keys a press (not a hold) should trigger, and mouse-drag camera orbit. The game
+// loop reads `keys` every step and consumes actions with takeActions(), so a press is never
+// seen twice and never missed between frames.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+/** Action bits takeActions() hands out once per press. */
+export const ACTION_ENTER = 1; // F or E: enter / leave a car
+export const ACTION_ATTACK = 2; // J or Space on foot: shove; Space in a car: handbrake
+export const ACTION_PAUSE = 4; // P or Esc: pause / resume
+export const ACTION_CONFIRM = 8; // Enter or Space: start, restart, dismiss a screen
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+/** Create the input reader bound to the window and the canvas the mouse drags on. */
+export function createInput(canvas) {
+  const keys = new Set();
+  let pending = 0;
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  // Camera orbit the mouse has dragged for, in radians; the player module owns the base yaw.
+  const orbit = { dx: 0, dy: 0 };
+  let wheel = 0;
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  const ACTION_KEYS = {
+    KeyF: ACTION_ENTER,
+    KeyE: ACTION_ENTER,
+    KeyJ: ACTION_ATTACK,
+    Space: ACTION_ATTACK | ACTION_CONFIRM,
+    KeyP: ACTION_PAUSE,
+    Escape: ACTION_PAUSE,
+    Enter: ACTION_CONFIRM,
+  };
 
   window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
+    if (event.repeat) return;
+    keys.add(event.code);
+    const action = ACTION_KEYS[event.code];
+    if (action) {
+      pending |= action;
+      event.preventDefault(); // Space must not scroll the page mid-chase.
+    }
+  });
+  window.addEventListener('keyup', (event) => keys.delete(event.code));
+  window.addEventListener('blur', () => keys.clear());
+
+  canvas.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    orbit.dx += event.clientX - lastX;
+    orbit.dy += event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+  });
+  canvas.addEventListener('pointerup', () => {
+    dragging = false;
+    pending |= ACTION_CONFIRM; // a click also dismisses title and end screens
+  });
+  canvas.addEventListener('wheel', (event) => {
+    wheel += Math.sign(event.deltaY);
     event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  }, { passive: false });
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
+    /** Is this KeyboardEvent.code currently held? */
+    down: (code) => keys.has(code),
+    /** Read and clear the one-shot actions pressed since the last call. */
     takeActions() {
-      const taken = actions;
-      actions = 0;
+      const actions = pending;
+      pending = 0;
+      return actions;
+    },
+    /** Read and clear the mouse drag accumulated since the last call. */
+    takeOrbit() {
+      const taken = { dx: orbit.dx, dy: orbit.dy, wheel };
+      orbit.dx = 0;
+      orbit.dy = 0;
+      wheel = 0;
       return taken;
     },
   };
